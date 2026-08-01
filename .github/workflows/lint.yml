@@ -1,0 +1,64 @@
+name: Lint
+
+# Static checks only. Even a subset build pulls a 7 GB image, so builds are
+# left to the contributor - see CONTRIBUTING.md.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Shell syntax
+        run: |
+          fail=0
+          for f in scripts/*.sh; do
+            if bash -n "$f"; then echo "ok   $f"; else echo "FAIL $f"; fail=1; fi
+          done
+          exit $fail
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+        with:
+          scandir: './scripts'
+          severity: warning
+
+      - name: R syntax
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -w /w r-base:4.4.2 \
+            Rscript -e 'invisible(parse("scripts/build_repo.R")); cat("scripts/build_repo.R ok\n")'
+
+      # `config --quiet` also catches unescaped ${VAR} in inline commands, which
+      # Compose silently interpolates to an empty string at parse time.
+      - name: Compose config
+        env:
+          BIOC_VERSION: '3.23'
+        run: |
+          out=$(docker compose config 2>&1 >/dev/null) || { echo "$out"; exit 1; }
+          if [ -n "$out" ]; then
+            echo "docker compose reported warnings:"
+            echo "$out"
+            exit 1
+          fi
+          echo "compose config clean"
+
+      - name: Workflow YAML parses
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              try:
+                  yaml.safe_load(open(f)); print('ok  ', f)
+              except Exception as e:
+                  bad = 1; print('FAIL', f, e)
+          sys.exit(bad)
+          PY
