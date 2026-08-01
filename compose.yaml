@@ -1,0 +1,132 @@
+# Build stack for Bioconductor WebAssembly (webR) package repositories.
+#
+#   docker compose run --rm build      build
+#   docker compose run --rm verify     check the result is publishable
+#   scripts/publish.sh                 verify, then sync to the object store
+#
+# Configuration comes from .env. Copy .env.example and set BIOC_VERSION.
+# See docs/development.md.
+#
+# The repository is built into a named volume, not a bind mount: rwasm's
+# fs::dir_create() chmods each directory it creates, which fails with EACCES
+# on Docker Desktop bind mounts from macOS. The volume also persists between
+# runs, so a re-run skips packages already in its PACKAGES index.
+# `export` copies it to ./out when the files are needed on the host.
+name: bioc-webr
+
+x-repo-path: &repo_path /repo/${BIOC_VERSION:?set BIOC_VERSION in .env, e.g. 3.23}/_site
+
+services:
+  build:
+    # Carries the Emscripten toolchain and the native R driver; ships rwasm
+    # from v0.6.0. Pinned because a webR release fixes the ABI of every .wasm
+    # it produces - see docs/operations.md.
+    image: ghcr.io/r-wasm/webr:${WEBR_VERSION:-v0.6.0}
+
+    environment:
+      BIOC_VERSION: ${BIOC_VERSION}
+      BIOC_REPO_URL: ${BIOC_REPO_URL:-https://bioconductor.org/packages/${BIOC_VERSION}/bioc/}
+      CRAN_URL: ${CRAN_URL:-https://cloud.r-project.org}
+      RWASM_REF: ${RWASM_REF:-r-wasm/rwasm}
+      SITE_DIR: *repo_path
+      LOG_DIR: /logs
+      # R's Ncpus option; rwasm compiles packages one at a time.
+      BUILD_JOBS: ${BUILD_JOBS:-2}
+      # Development subset: only these packages and their hard dependencies.
+      # The output is marked INCOMPLETE and `verify` refuses it.
+      BIOC_PACKAGES: ${BIOC_PACKAGES:-}
+      # Regular expression of package names to exclude from a full build.
+      BIOC_SKIP_REGEX: ${BIOC_SKIP_REGEX:-}
+      # Applied to the logs on the way out so they are not left root-owned.
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+
+    volumes:
+      - ./scripts:/opt/bioc-webr/scripts:ro
+      - repo:/repo
+      # Logs are small and wanted without starting a container.
+      - ${OUT_DIR:-./out}/${BIOC_VERSION}/logs:/logs
+      # pkgcache source tarballs; without this every run re-downloads them.
+      - pkgcache:/root/.cache/R
+      # R user library; only used when an older WEBR_VERSION lacks rwasm.
+      - rlib:/root/R
+
+    working_dir: /opt/bioc-webr
+    command: ["bash", "/opt/bioc-webr/scripts/entrypoint.sh"]
+    init: true
+
+  verify:
+    # Runs the publishability checks in a container so GNU find/grep/stat
+    # match the tools that built the tree.
+    image: debian:12-slim
+    environment:
+      BIOC_VERSION: ${BIOC_VERSION}
+      SITE_DIR: *repo_path
+      MIN_PACKAGES: ${MIN_PACKAGES:-500}
+    volumes:
+      - ./scripts:/opt/bioc-webr/scripts:ro
+      - repo:/repo:ro
+    command: ["bash", "/opt/bioc-webr/scripts/verify_site.sh"]
+
+  export:
+    # Copy the built repository to ${OUT_DIR}/${BIOC_VERSION}/_site for host
+    # tools. Modes are not preserved: restoring them is the operation that
+    # fails on a macOS bind mount.
+    image: debian:12-slim
+    profiles: ["export"]
+    environment:
+      SITE_DIR: *repo_path
+    volumes:
+      - repo:/repo:ro
+      - ${OUT_DIR:-./out}/${BIOC_VERSION}/_site:/export
+    command:
+      - "bash"
+      - "-c"
+      - |
+        set -euo pipefail
+        # $$ escapes the dollar so the shell in the container expands it, not
+        # Compose. A single $ here makes Compose interpolate SITE_DIR at parse
+        # time - it is not set on the host, so it silently becomes empty and
+        # warns on every unrelated command.
+        echo "Exporting $${SITE_DIR} -> ${OUT_DIR:-./out}/${BIOC_VERSION}/_site"
+        tar -C "$${SITE_DIR}" -cf - . \
+          | tar -C /export -xf - --no-same-permissions --no-same-owner
+        echo "Exported $$(find /export -type f | wc -l) files."
+
+  serve:
+    # Local preview. webR fetches packages over HTTP, so a built repository
+    # cannot be tested from file:// - it needs an origin.
+    image: nginx:${NGINX_VERSION:-1.29-alpine}
+    profiles: ["serve"]
+    ports:
+      - "${SERVE_PORT:-8080}:80"
+    volumes:
+      - repo:/repo:ro
+      - ./demo:/demo:ro
+      - ./scripts/serve-nginx.conf:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      # Substituted into the nginx template by the image's entrypoint.
+      BIOC_VERSION: ${BIOC_VERSION}
+
+  publish:
+    # Profile-gated: `rclone sync` DELETES remote files absent locally. The
+    # default command is the harmless `version`; scripts/publish.sh passes the
+    # real sync arguments only after `verify` passes.
+    #
+    # RCLONE_REMOTE/RCLONE_CONFIG_DIR are not `:?`-required here: Compose
+    # interpolates every service regardless of profile, which would break
+    # `build` for anyone not publishing. publish.sh enforces them.
+    image: rclone/rclone:${RCLONE_VERSION:-1.71}
+    profiles: ["publish"]
+    volumes:
+      - repo:/repo:ro
+      - ${RCLONE_CONFIG_DIR:-/tmp}:/config/rclone:ro
+    command: ["version"]
+
+volumes:
+  # The built repository; persists so a re-run skips packages already indexed.
+  # `docker volume rm bioc-webr_repo` discards it.
+  repo:
+  # Caches. Safe to discard at any time.
+  pkgcache:
+  rlib:

@@ -1,0 +1,10 @@
+# Build output. Everything under here is generated and can be large -
+# a full Bioconductor release is tens of gigabytes.
+/out/
+
+# Local configuration. .env.example is the tracked template; .env holds real
+# values, including the path to rclone credentials.
+.env
+
+.DS_Store
+*.swp
