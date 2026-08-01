@@ -1,0 +1,231 @@
+name: Build webR repository
+
+# Reusable. Call it from another repository, or run it here from the Actions
+# tab.
+#
+#   jobs:
+#     webr:
+#       uses: almahmoud/bioc-webr/.github/workflows/build.yml@main
+#       with:
+#         bioc_version: '3.23'
+#       secrets:
+#         rclone_config: ${{ secrets.RCLONE_CONFIG }}
+#
+# The build and publish steps are the same compose services used locally -
+# see docs/architecture.md.
+
+on:
+  workflow_call:
+    inputs:
+      bioc_version:
+        description: 'Bioconductor release to build, e.g. 3.23'
+        required: true
+        type: string
+      webr_version:
+        description: 'webR image tag. Determines the wasm ABI; see docs/operations.md'
+        required: false
+        default: 'v0.6.0'
+        type: string
+      packages:
+        description: 'Build only these packages (space separated). Development use; output is marked INCOMPLETE and cannot be published'
+        required: false
+        default: ''
+        type: string
+      build_jobs:
+        description: 'R Ncpus option for the build driver. rwasm compiles packages one at a time'
+        required: false
+        default: 2
+        type: number
+      publish:
+        description: 'Publish to the object store after a successful build'
+        required: false
+        default: false
+        type: boolean
+      rclone_remote:
+        description: 'rclone remote and path, e.g. js2:/webr'
+        required: false
+        default: ''
+        type: string
+      min_packages:
+        description: 'Refuse to publish below this many binary packages'
+        required: false
+        default: 500
+        type: number
+      runs_on:
+        description: 'Runner label. A full release needs far more disk and memory than a standard hosted runner has'
+        required: false
+        default: 'ubuntu-latest'
+        type: string
+    secrets:
+      rclone_config:
+        description: 'Contents of rclone.conf. Required when publish is true'
+        required: false
+    outputs:
+      packages_built:
+        description: 'Number of WebAssembly binary packages produced'
+        value: ${{ jobs.build.outputs.packages_built }}
+      published:
+        description: 'Whether the build was published'
+        value: ${{ jobs.build.outputs.published }}
+
+  workflow_dispatch:
+    inputs:
+      bioc_version:
+        description: 'Bioconductor release to build, e.g. 3.23'
+        required: true
+        type: string
+      webr_version:
+        description: 'webR image tag'
+        required: false
+        default: 'v0.6.0'
+        type: string
+      packages:
+        description: 'Build only these packages (space separated). Leave empty for a full release'
+        required: false
+        default: ''
+        type: string
+      publish:
+        description: 'Publish after a successful build'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# One build per release at a time: concurrent builds of the same version
+# would race on the same output tree.
+concurrency:
+  group: webr-build-${{ inputs.bioc_version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
+    outputs:
+      packages_built: ${{ steps.summarise.outputs.packages_built }}
+      published: ${{ steps.publish.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # A full release is tens of gigabytes; a standard hosted runner has
+      # roughly 14 GB free - hence the runs_on input. Reclaiming preinstalled
+      # toolchains is enough for a subset build or a small release.
+      - name: Reclaim runner disk
+        if: inputs.runs_on == 'ubuntu-latest' || inputs.runs_on == ''
+        run: |
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          echo "After:"; df -h / | tail -1
+
+      - name: Write .env
+        env:
+          BIOC_VERSION: ${{ inputs.bioc_version }}
+          WEBR_VERSION: ${{ inputs.webr_version || 'v0.6.0' }}
+          BIOC_PACKAGES: ${{ inputs.packages }}
+          BUILD_JOBS: ${{ inputs.build_jobs || 2 }}
+          MIN_PACKAGES: ${{ inputs.min_packages || 500 }}
+        run: |
+          set -euo pipefail
+          {
+            echo "BIOC_VERSION=${BIOC_VERSION}"
+            echo "WEBR_VERSION=${WEBR_VERSION}"
+            echo "BIOC_PACKAGES=${BIOC_PACKAGES}"
+            echo "BUILD_JOBS=${BUILD_JOBS}"
+            echo "MIN_PACKAGES=${MIN_PACKAGES}"
+            echo "OUT_DIR=./out"
+            echo "HOST_UID=$(id -u)"
+            echo "HOST_GID=$(id -g)"
+          } > .env
+          echo "--- .env ---"; cat .env
+
+      - name: Build
+        run: docker compose run --rm build
+
+      - name: Summarise
+        id: summarise
+        env:
+          BIOC_VERSION: ${{ inputs.bioc_version }}
+        run: |
+          set -euo pipefail
+          SITE="out/${BIOC_VERSION}/_site"
+          COUNT=$(find "$SITE" -name '*.tgz' -type f | wc -l | tr -d ' ')
+          echo "packages_built=${COUNT}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### webR repository build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Bioconductor | ${BIOC_VERSION} |"
+            echo "| webR image | ${{ inputs.webr_version || 'v0.6.0' }} |"
+            echo "| Packages built | ${COUNT} |"
+            echo "| Size | $(du -sh "$SITE" | cut -f1) |"
+            if [ -f "${SITE}/INCOMPLETE" ]; then
+              echo "| Complete | **no - subset build, not publishable** |"
+            else
+              echo "| Complete | yes |"
+            fi
+            echo ""
+            echo "<details><summary>BUILDINFO</summary>"
+            echo ""
+            echo '```'
+            cat "${SITE}/BUILDINFO" 2>/dev/null || echo "(missing)"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs even when publishing is off: a tree that would be refused for
+      # publication is a failed build.
+      - name: Validate
+        env:
+          BIOC_VERSION: ${{ inputs.bioc_version }}
+          BIOC_PACKAGES: ${{ inputs.packages }}
+        run: |
+          if [ -n "${BIOC_PACKAGES}" ]; then
+            echo "Subset build - validation would fail by design. Skipping."
+            exit 0
+          fi
+          bash scripts/publish.sh --check-only
+
+      - name: Publish
+        id: publish
+        if: inputs.publish && inputs.packages == ''
+        env:
+          RCLONE_REMOTE: ${{ inputs.rclone_remote }}
+          RCLONE_CONF: ${{ secrets.rclone_config }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RCLONE_REMOTE}" ]; then
+            echo "::error::publish is true but rclone_remote was not provided"
+            exit 1
+          fi
+          if [ -z "${RCLONE_CONF}" ]; then
+            echo "::error::publish is true but the rclone_config secret was not provided"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/rclone"
+          chmod 700 "${RUNNER_TEMP}/rclone"
+          printf '%s' "${RCLONE_CONF}" > "${RUNNER_TEMP}/rclone/rclone.conf"
+          chmod 600 "${RUNNER_TEMP}/rclone/rclone.conf"
+
+          {
+            echo "RCLONE_REMOTE=${RCLONE_REMOTE}"
+            echo "RCLONE_CONFIG_DIR=${RUNNER_TEMP}/rclone"
+          } >> .env
+
+          bash scripts/publish.sh
+
+      - name: Shred credentials
+        if: always()
+        run: rm -rf "${RUNNER_TEMP}/rclone"
+
+      # Logs only; the build output is far too large for an artifact.
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.bioc_version }}
+          path: out/${{ inputs.bioc_version }}/logs/
+          retention-days: 14
+          if-no-files-found: warn
