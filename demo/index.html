@@ -1,0 +1,355 @@
+<!doctype html>
+<!--
+  Bioconductor + webR demo page. Static; all R runs in the visitor's browser.
+
+  The two pinned versions below MUST agree - a webR release fixes the ABI of
+  every package built for it:
+
+      webR 0.5.4 - 0.5.9   ships R 4.5.1   looks in bin/emscripten/contrib/4.5/
+      webR 0.6.0           ships R 4.6.0   looks in bin/emscripten/contrib/4.6/
+
+  A mismatch fails every install with "package not available". Never use
+  `latest`.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run Bioconductor in your browser</title>
+<style>
+  :root {
+    --bg:#ffffff; --panel:#f7f9fb; --ink:#101828; --muted:#5b6b7f;
+    --line:#e3e8ef; --brand:#1a81c2; --brand-ink:#ffffff; --accent:#5c9a2e;
+    --code-bg:#f4f6f8; --shadow:0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0c1119; --panel:#121a25; --ink:#e6edf5; --muted:#93a3b8;
+      --line:#222e3e; --brand:#43a3e0; --brand-ink:#06121c; --accent:#8fc55a;
+      --code-bg:#0e1620; --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink); line-height:1.6;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16px;
+  }
+  code, pre, textarea { font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; }
+  a { color:var(--brand); }
+
+  header {
+    position:sticky; top:0; z-index:10; background:color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter:saturate(1.6) blur(8px); border-bottom:1px solid var(--line);
+  }
+  .bar { max-width:64rem; margin:0 auto; padding:.7rem 1.25rem;
+         display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
+  .mark { font-weight:650; letter-spacing:-.01em; }
+  .mark span { color:var(--brand); }
+  .spacer { flex:1; }
+  .pill {
+    display:inline-flex; align-items:center; gap:.45rem; font-size:.8rem;
+    padding:.25rem .7rem; border-radius:999px; border:1px solid var(--line);
+    background:var(--panel); color:var(--muted); white-space:nowrap;
+  }
+  .dot { width:.5rem; height:.5rem; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.busy  { background:#e0a02a; animation:pulse 1.1s ease-in-out infinite; }
+  .dot.ready { background:var(--accent); }
+  .dot.error { background:#d6493b; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  main { max-width:64rem; margin:0 auto; padding:2rem 1.25rem 4rem; }
+  h1 { font-size:clamp(1.6rem,1.1rem + 2vw,2.3rem); line-height:1.2;
+       letter-spacing:-.02em; margin:.5rem 0 .6rem; }
+  .lede { color:var(--muted); font-size:1.05rem; max-width:46rem; margin:0 0 1.5rem; }
+  .lede strong { color:var(--ink); font-weight:600; }
+
+  .chips { display:flex; gap:.5rem; flex-wrap:wrap; margin:0 0 1rem; }
+  .chip {
+    font:inherit; font-size:.875rem; padding:.4rem .85rem; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink);
+    cursor:pointer; transition:border-color .15s, background .15s;
+  }
+  .chip:hover { border-color:var(--brand); }
+  .chip[aria-pressed="true"] { background:var(--brand); border-color:var(--brand); color:var(--brand-ink); }
+
+  .grid { display:grid; gap:1rem; grid-template-columns:1fr; }
+  @media (min-width:60rem) { .grid { grid-template-columns:1fr 1fr; } }
+
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }
+  .card h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--muted); margin:0; padding:.7rem 1rem;
+             border-bottom:1px solid var(--line); font-weight:600; }
+  .card .body { padding:1rem; }
+
+  textarea {
+    width:100%; min-height:15rem; resize:vertical; border:0; outline:0;
+    background:transparent; color:var(--ink); font-size:.875rem; line-height:1.6;
+    padding:0; tab-size:2;
+  }
+  .actions { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap;
+             padding:.75rem 1rem; border-top:1px solid var(--line); }
+  button.run {
+    font:inherit; font-weight:600; font-size:.9rem; padding:.5rem 1.3rem;
+    border-radius:8px; border:1px solid var(--brand); background:var(--brand);
+    color:var(--brand-ink); cursor:pointer;
+  }
+  button.run:disabled { opacity:.45; cursor:default; }
+  button.ghost { font:inherit; font-size:.9rem; padding:.5rem .9rem; border-radius:8px;
+                 border:1px solid var(--line); background:transparent; color:var(--muted);
+                 cursor:pointer; }
+  .hint { font-size:.8rem; color:var(--muted); }
+  kbd { font-size:.75rem; border:1px solid var(--line); border-bottom-width:2px;
+        border-radius:4px; padding:.05rem .3rem; background:var(--bg); }
+
+  pre.out { margin:0; padding:0; background:transparent; font-size:.85rem;
+            white-space:pre-wrap; word-break:break-word; min-height:3rem; color:var(--ink); }
+  pre.out:empty::before { content:"Output appears here."; color:var(--muted); }
+  .plots { display:grid; gap:.75rem; margin-top:.85rem; }
+  .plots canvas { width:100%; height:auto; border:1px solid var(--line);
+                  border-radius:8px; background:#fff; }
+
+  .notes { margin-top:2.5rem; border-top:1px solid var(--line); padding-top:1.5rem;
+           color:var(--muted); font-size:.9rem; }
+  .notes h3 { color:var(--ink); font-size:.95rem; margin:1.25rem 0 .4rem; }
+  .notes code { background:var(--code-bg); padding:.1rem .35rem; border-radius:4px; font-size:.85em; }
+  .notes ul { padding-left:1.15rem; margin:.4rem 0; }
+  .versions { font-size:.8rem; color:var(--muted); margin-top:1.5rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <div class="mark">Bioconductor <span>· webR</span></div>
+    <div class="spacer"></div>
+    <div class="pill"><span class="dot" id="dot"></span><span id="status">starting R…</span></div>
+  </div>
+</header>
+
+<main>
+  <h1>Run Bioconductor in your browser</h1>
+  <p class="lede">
+    R is compiled to WebAssembly and running in this tab. <strong>Nothing is
+    installed on your machine, and nothing you type leaves your browser.</strong>
+    Pick an example, edit it, and run it.
+  </p>
+
+  <div class="chips" id="chips"></div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>R code</h2>
+      <div class="body"><textarea id="code" spellcheck="false" aria-label="R code"></textarea></div>
+      <div class="actions">
+        <button class="run" id="run" disabled>Run</button>
+        <button class="ghost" id="reset">Reset</button>
+        <span class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Output</h2>
+      <div class="body">
+        <pre class="out" id="out"></pre>
+        <div class="plots" id="plots"></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="notes">
+    <h3>What this is</h3>
+    <p>
+      Bioconductor packages built for WebAssembly, installed straight into the
+      browser from
+      <a href="https://webr.bioconductor.org">webr.bioconductor.org</a>, with
+      CRAN dependencies from <a href="https://repo.r-wasm.org">repo.r-wasm.org</a>.
+      The same thing works inside a package vignette — see
+      <a href="https://docs.r-wasm.org/webr/latest/">the webR documentation</a>.
+    </p>
+
+    <h3>What it costs you</h3>
+    <ul>
+      <li>The first load downloads R itself — tens of megabytes, then cached.</li>
+      <li>Packages install per session, a few seconds each. Nothing persists across a reload.</li>
+    </ul>
+
+    <h3>Where it stops</h3>
+    <ul>
+      <li>A browser tab: limited memory, no parallelism, no real filesystem.</li>
+      <li>Anything needing threads, sockets or subprocesses may install and still fail at runtime.</li>
+      <li>Built for small, self-contained examples — not for an analysis.</li>
+    </ul>
+
+    <p class="versions" id="versions"></p>
+  </div>
+</main>
+
+<script type="module">
+// ---- pinned versions: these two must agree, see the comment at the top ------
+const WEBR_VERSION = 'v0.5.9';   // ships R 4.5.1
+const BIOC_VERSION = '3.22';     // published for R 4.5
+// ----------------------------------------------------------------------------
+
+// The ?repo= override is honoured only on localhost, so a crafted link to the
+// public page cannot make a visitor install packages from somewhere else.
+const IS_LOCAL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+const REPO_OVERRIDE = IS_LOCAL ? new URLSearchParams(location.search).get('repo') : null;
+
+const REPOS = [
+  REPO_OVERRIDE ?? `https://webr.bioconductor.org/${BIOC_VERSION}`,  // Bioconductor first
+  'https://repo.r-wasm.org',                                        // CRAN dependencies
+];
+
+const EXAMPLES = [
+  {
+    name: 'DataFrame',
+    pkgs: ['S4Vectors'],
+    code: `library(S4Vectors)
+
+counts <- DataFrame(
+  gene  = c("TP53", "BRCA1", "EGFR", "MYC"),
+  count = c(120L, 45L, 310L, 88L)
+)
+counts$cpm <- round(counts$count / sum(counts$count) * 1e6)
+counts[order(-counts$count), ]`,
+  },
+  {
+    name: 'Genomic ranges',
+    pkgs: ['GenomicRanges'],
+    code: `library(GenomicRanges)
+
+gr <- GRanges(
+  seqnames = c("chr1", "chr1", "chr2"),
+  ranges   = IRanges(start = c(100, 150, 400), width = c(80, 60, 120)),
+  strand   = c("+", "-", "+"),
+  gene     = c("A", "B", "C")
+)
+gr
+cat("\\nwidths: ", paste(width(gr), collapse = ", "), "\\n")
+reduce(gr)`,
+  },
+  {
+    name: 'A plot',
+    pkgs: [],
+    code: `set.seed(1)
+expr <- data.frame(
+  control = rnorm(60, mean = 8, sd = 1.2),
+  treated = rnorm(60, mean = 9.4, sd = 1.2)
+)
+
+boxplot(expr,
+        col    = c("#cfe3f2", "#c9e2b0"),
+        border = "#33506b",
+        main   = "Expression by condition",
+        ylab   = "log2 expression")
+points(jitter(rep(1:2, each = 60), 0.6),
+       unlist(expr), pch = 19, cex = .5,
+       col = "#33506b55")
+
+t.test(expr$control, expr$treated)`,
+  },
+];
+
+// ---- elements ---------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const [codeEl, outEl, plotsEl, runEl, resetEl, chipsEl, dotEl, statusEl] =
+  ['code','out','plots','run','reset','chips','dot','status'].map($);
+
+$('versions').textContent = REPO_OVERRIDE
+  ? `webR ${WEBR_VERSION} · local repository ${REPO_OVERRIDE} · all computation happens in your browser`
+  : `webR ${WEBR_VERSION} · Bioconductor ${BIOC_VERSION} · all computation happens in your browser`;
+
+let current = 0;
+const setStatus = (kind, msg) => { dotEl.className = `dot ${kind}`; statusEl.textContent = msg; };
+
+EXAMPLES.forEach((ex, i) => {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.textContent = ex.name;
+  b.setAttribute('aria-pressed', String(i === 0));
+  b.addEventListener('click', () => select(i));
+  chipsEl.append(b);
+});
+
+function select(i) {
+  current = i;
+  codeEl.value = EXAMPLES[i].code;
+  [...chipsEl.children].forEach((c, j) => c.setAttribute('aria-pressed', String(i === j)));
+  outEl.textContent = '';
+  plotsEl.replaceChildren();
+}
+select(0);
+resetEl.addEventListener('click', () => select(current));
+
+// ---- webR -------------------------------------------------------------------
+let webR;
+const installed = new Set();
+
+async function ensure(pkgs) {
+  const need = pkgs.filter((p) => !installed.has(p));
+  if (!need.length) return;
+  setStatus('busy', `installing ${need.join(', ')}…`);
+  await webR.installPackages(need, { repos: REPOS });
+  need.forEach((p) => installed.add(p));
+}
+
+async function run() {
+  runEl.disabled = true;
+  outEl.textContent = '';
+  plotsEl.replaceChildren();
+  try {
+    await ensure(EXAMPLES[current].pkgs);
+    setStatus('busy', 'running…');
+
+    const shelter = await new webR.Shelter();
+    try {
+      const res = await shelter.captureR(codeEl.value, {
+        withAutoprint: true,
+        captureStreams: true,
+        captureGraphics: true,
+      });
+      outEl.textContent =
+        res.output.map((o) => o.data).join('\n') || '(no text output)';
+      for (const img of res.images) {
+        const c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        c.getContext('2d').drawImage(img, 0, 0);
+        plotsEl.append(c);
+      }
+    } finally {
+      shelter.purge();
+    }
+    setStatus('ready', 'ready');
+  } catch (err) {
+    outEl.textContent = `Error: ${err?.message ?? err}`;
+    setStatus('error', 'error');
+  }
+  runEl.disabled = false;
+}
+
+runEl.addEventListener('click', run);
+codeEl.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (!runEl.disabled) run(); }
+});
+
+try {
+  setStatus('busy', 'downloading R…');
+  const { WebR } = await import(`https://webr.r-wasm.org/${WEBR_VERSION}/webr.mjs`);
+  webR = new WebR();
+  await webR.init();
+  setStatus('ready', 'ready');
+  runEl.disabled = false;
+} catch (err) {
+  setStatus('error', 'unavailable');
+  outEl.textContent =
+    `webR could not start: ${err?.message ?? err}\n\n` +
+    `Most likely cause: webR ${WEBR_VERSION} and Bioconductor ${BIOC_VERSION} ` +
+    `are built for different R versions.`;
+}
+</script>
+
+</body>
+</html>
