@@ -1,5 +1,9 @@
 # Architecture
 
+This repository builds WebAssembly package repositories for Bioconductor
+releases and holds the templates that serve them. [Hosting](#hosting) covers
+the serving side.
+
 ## What the build is
 
 One input — a Bioconductor release number — and one output: a CRAN-like
@@ -168,13 +172,109 @@ rebuilding. See [operations.md](operations.md).
 
 - `pathlist`: every file in the tree, one per line, prefixed with the release
   (`3.23/bin/emscripten/contrib/4.6/...`) and sorted with `LC_ALL=C` so that
-  rebuilds diff cleanly. It lists itself but not `index.html`. Consumers may
-  depend on that shape, so changing it is a decision rather than a cleanup.
+  rebuilds diff cleanly. It lists itself but not `index.html`. The hosting
+  init container reads it (see [Hosting](#hosting)), so changing its shape is a
+  decision rather than a cleanup.
 - `index.html`: one link per `pathlist` entry, HTML-escaped.
 
 `BUILDINFO` records the release, the source URL, the rwasm version, the build
 image's R version, the package count, the build time and whether the build was
 a subset.
+
+## Hosting
+
+Published releases are served from Kubernetes by the templates in
+[`deploy/`](../deploy/):
+
+| Host | Serves | Namespace |
+|---|---|---|
+| `https://webr.bioconductor.org/<release>/` | The published release trees | `webr` |
+| `https://run.webr.bioconductor.org/` | A webR console page | `webr-repl` |
+
+```
+<RCLONE_REMOTE>/<release>/        object storage, the authoritative copy
+      │
+      │  init container: rclone, on every pod start
+      ▼
+webr-pvc  /mnt/webr-js2/<release>/
+      │
+      │  httpuv::runStaticServer(), port 8080
+      ▼
+webr-service :80  →  Traefik Ingress (TLS, CORS)  →  https://webr.bioconductor.org/<release>/
+```
+
+### webr.bioconductor.org
+
+`webr-deployment` runs one replica with the `Recreate` strategy:
+
+- **`init-rclone`** (`rclone/rclone:latest`) copies each release named in its
+  script from `js2:/webr/<release>` onto the volume. For each release it
+  copies the served directory aside, runs `rclone sync` into the copy, runs a
+  second copy pass driven by the release's `pathlist`, then swaps the copy into
+  place. It does not check whether the copies succeeded, and the second pass
+  fetches nothing for 3.19 to 3.23
+  ([Known limitations](deployment.md#known-limitations)). The script names the
+  releases (3.18 to 3.23), the `js2` remote
+  and the object store's public URL, from which it downloads `pathlist`.
+- **`webr-container`** (`rocker/r-ver:latest`) installs httpuv from Posit
+  Package Manager (`p3m.dev`, the repository `rocker/r-ver` configures), then
+  serves `/mnt/webr-js2` with `httpuv::runStaticServer()` on port 8080 and an
+  `Access-Control-Allow-Origin: *` header. Its probes check the TCP socket,
+  because `/` has no index and answers 404.
+
+The `webr` Ingress terminates TLS with a certificate from cert-manager and sets
+`Access-Control-Allow-Origin: *` and `Access-Control-Allow-Methods: HEAD, GET,
+OPTIONS` through the `webr-cors` Traefik middleware. A second Ingress on the
+`web` entrypoint redirects HTTP to HTTPS.
+
+A release's URL mirrors its object-storage path:
+`js2:/webr/3.23/bin/emscripten/contrib/4.6/PACKAGES` is served as
+`https://webr.bioconductor.org/3.23/bin/emscripten/contrib/4.6/PACKAGES`.
+
+| Release | R version of the binaries |
+|---|---|
+| 3.18 | 4.3 |
+| 3.19, 3.20 | 4.4 |
+| 3.21, 3.22 | 4.5 |
+| 3.23 | 4.6 |
+
+### run.webr.bioconductor.org
+
+`webr-repl` runs two `nginx:1.29-alpine` replicas serving the files in
+[`deploy/repl-files/`](../deploy/repl-files/) from the `webr-repl-files`
+ConfigMap. `index.html` is an R console page that loads webR from
+`https://webr.r-wasm.org/latest/`; it does not install packages from
+webr.bioconductor.org. `repl.mjs` is served alongside it but not loaded by the
+page. nginx sends a `Content-Security-Policy` that limits sources to the page's
+own origin and `webr.r-wasm.org`, and answers unknown paths with `index.html`.
+The policy allows no inline script, so browsers block the page's script and the
+console does not start; see [deployment.md](deployment.md#known-limitations).
+
+### State
+
+| What | Where | If it is lost |
+|---|---|---|
+| Release trees | Object storage, `js2:/webr/<release>` | Rebuild and republish each release |
+| Served copy | `webr-pvc` | The init container copies it back, which takes hours |
+| Object-storage credentials | Secret `rclone-conf` in `webr` | Recreate from the object store's credentials |
+| TLS certificates | Secrets managed by cert-manager | cert-manager reissues them |
+| REPL page | ConfigMaps generated from `deploy/repl-files/` | Reapply the templates |
+
+### External dependencies
+
+- Object storage holding the release trees, read with the `rclone-conf`
+  credentials and, for `pathlist`, over public HTTPS.
+- Posit Package Manager (`p3m.dev`), from which `webr-container` installs
+  httpuv on every start.
+- Docker Hub, for the `rclone/rclone`, `rocker/r-ver` and `nginx` images.
+- Traefik as the ingress controller, and cert-manager with a ClusterIssuer that
+  can validate the hostnames. Bioconductor's issuer answers DNS-01 challenges,
+  which needs API access to the zone's authoritative DNS provider.
+- `webr.r-wasm.org`, which serves webR to the REPL page and to
+  [`demo/`](../demo/).
+
+Known limitations of the hosting setup are listed in
+[deployment.md](deployment.md#known-limitations).
 
 ## What is not here
 
