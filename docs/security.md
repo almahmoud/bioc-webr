@@ -123,6 +123,60 @@ that a `.tgz` came from this pipeline rather than being substituted at the
 object store or in transit. Serving over HTTPS covers transit. Signing is not
 implemented; it would need support in webR's installer to be useful.
 
+## Hosting
+
+### Trust boundaries
+
+- `webr.bioconductor.org` serves static files from the `webr-pvc` volume. The
+  server container (`httpuv::runStaticServer()`) has no credentials mounted.
+- The init container holds the object-storage credentials and is the only
+  component that talks to object storage with them.
+- `run.webr.bioconductor.org` serves static files: a console page and
+  `repl.mjs`. Any R code runs in the visitor's browser, with webR loaded from
+  `webr.r-wasm.org`.
+- Traefik terminates TLS for both hosts; traffic inside the cluster is HTTP.
+
+### Secrets
+
+| Secret | Namespace | Holds | Managed by |
+|---|---|---|---|
+| `rclone-conf` | `webr` | `rclone.conf` for object storage | The operator, by hand; never committed |
+| `webr-bioconductor-org-tls` | `webr` | TLS key and certificate | cert-manager |
+| `run-webr-bioconductor-org-tls` | `webr-repl` | TLS key and certificate | cert-manager |
+| ClusterIssuer credentials | cert-manager's namespace | DNS provider API credentials, for a DNS-01 issuer | The cluster operator |
+
+The init container only reads object storage. Give `rclone-conf` a read-only
+credential where the object store supports one, separate from the publishing
+credential described above.
+
+### Hardening in place
+
+- Both hosts redirect HTTP to HTTPS with a permanent redirect.
+- `run.webr.bioconductor.org` sends `X-Content-Type-Options: nosniff`.
+- Every container has a memory limit, and the serving containers have
+  readiness and liveness probes.
+
+### Known gaps
+
+- **Floating versions.** `rclone/rclone:latest`, `rocker/r-ver:latest`, the
+  httpuv installed from Posit Package Manager at every start, and webR
+  `latest` on the REPL page all change without a change to this repository.
+  Each is a supply chain input that is not pinned.
+- **The REPL page's Content-Security-Policy blocks the page.** It allows no
+  inline script, so the console does not start, and it has no
+  `'wasm-unsafe-eval'`; see
+  [deployment.md](deployment.md#known-limitations).
+- **`repl.mjs` names an unrelated package repository.** It is served but not
+  loaded, and sets `https://my-repo.com`, a domain outside Bioconductor's
+  control, as webR's first package repository. A page that loads it installs
+  WebAssembly packages from that domain.
+- **No `securityContext`.** The containers run as their images' default user,
+  which is root for `rclone/rclone` and `rocker/r-ver`, and the server
+  container mounts the volume read-write.
+- **No NetworkPolicy.** Pods in both namespaces can reach anything the cluster
+  network allows.
+- **No HSTS.** Neither host sends `Strict-Transport-Security`.
+
 ## Excluded by design
 
 - **No secrets in the repository.** `.env` is gitignored; `.env.example`
