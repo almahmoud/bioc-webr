@@ -85,7 +85,7 @@ git clone https://github.com/almahmoud/bioc-webr
 cd bioc-webr
 cp .env.example .env
 # set BIOC_VERSION and HOST_UID/HOST_GID; to publish, also RCLONE_REMOTE,
-# RCLONE_CONFIG_DIR and MIN_PACKAGES
+# RCLONE_CONFIG_DIR and MIN_PACKAGES; see docs/examples/production.env
 
 docker compose run --rm build
 docker compose run --rm verify

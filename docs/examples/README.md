@@ -1,5 +1,12 @@
 # Examples
 
+## Production configurations
+
+| File | What it is |
+|---|---|
+| [`production.env`](production.env) | `.env` for a full release build that publishes to object storage |
+| [`site-overlay/`](site-overlay/) | kustomize overlay adapting the hosting templates in [`deploy/`](../../deploy/) to another site |
+
 ## Using the repository from webR
 
 Each section below says what has been run and what is written from webR's
