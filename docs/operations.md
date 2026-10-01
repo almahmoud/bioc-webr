@@ -31,18 +31,26 @@ Consequences:
   `bin/emscripten/contrib/<r-version>/` path in the output. Changing webR can
   therefore change the repository's shape, not only its contents.
 
-Bump procedure:
+Bump procedure. The checks run in a separate Compose project,
+`bioc-webr-test`, so they start from an empty volume and leave the release tree
+in `bioc-webr_repo` untouched; in that volume, rwasm would skip packages it has
+already built for the same R version, and a subset build would mark the tree
+`INCOMPLETE`:
 
 ```bash
 # 1. Check whether the upstream rwasm remotes issue is fixed in the new image
 BIOC_PACKAGES=BiocGenerics WEBR_VERSION=<new> \
-  docker compose run --rm -e REMOTES_MODE=strict build
+  docker compose -p bioc-webr-test run --rm -e REMOTES_MODE=strict build
 
 # 2. Subset build against the new image
-BIOC_PACKAGES=BiocGenerics WEBR_VERSION=<new> docker compose run --rm build
+BIOC_PACKAGES=BiocGenerics WEBR_VERSION=<new> \
+  docker compose -p bioc-webr-test run --rm build
 
 # 3. Load a package from it in a real webR session before committing the bump
-docker compose --profile serve up serve
+docker compose -p bioc-webr-test --profile serve up serve
+
+# 4. Remove the test project's containers and volumes
+docker compose -p bioc-webr-test --profile serve down --volumes
 ```
 
 `REMOTES_MODE` reaches the container only through `-e`; step 1's log shows
