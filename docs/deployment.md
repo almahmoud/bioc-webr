@@ -108,10 +108,14 @@ organisation runner group that repository can use. A called workflow runs in
 the caller's context and reaches only the caller's runners.
 
 ```bash
-# On the build host, as a non-root user in the docker group
+# On the build host, as a non-root user in the docker group.
+# <version> is the latest release at https://github.com/actions/runner/releases,
+# without the leading v; its release notes list the SHA-256 for linux-x64.
+RUNNER_VERSION=<version>
 mkdir actions-runner && cd actions-runner
 curl -o actions-runner-linux-x64.tar.gz -L \
-  https://github.com/actions/runner/releases/download/v2.330.0/actions-runner-linux-x64-2.330.0.tar.gz
+  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+echo "<sha256 from the release notes>  actions-runner-linux-x64.tar.gz" | sha256sum -c
 tar xzf actions-runner-linux-x64.tar.gz
 ./config.sh --url https://github.com/<owner>/<calling-repository> \
             --token <from the repository's runner settings> \
