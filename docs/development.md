@@ -114,6 +114,7 @@ scripts/
   build.yml               reusable workflow. Calls the same compose services
   lint.yml                static checks on pull requests
 demo/                     browser demo page
+deploy/                   Kubernetes templates serving the published releases
 docs/                     you are here
 ```
 
@@ -138,8 +139,8 @@ mistakes:
 
 - **`pathlist` contains itself but not `index.html`.** The file is created empty
   before the tree walk so that it appears in its own listing, and `index.html`
-  is generated afterwards. Consumers may depend on it. Changing it is a
-  decision, not a cleanup.
+  is generated afterwards. The hosting init container in `deploy/` reads
+  `pathlist`. Changing its shape is a decision, not a cleanup.
 - **Every path is prefixed with the Bioconductor version**, not with the site
   root, because the listing is consumed relative to the bucket root and the
   published tree lives under `<RCLONE_REMOTE>/<version>/`.
