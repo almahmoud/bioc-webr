@@ -1,6 +1,7 @@
 # Operations
 
-Running real builds and publishing them.
+Running real builds, publishing them, and operating the hosting that serves
+them. Update procedures and their cadence are in [updating.md](updating.md).
 
 ## Version pinning
 
@@ -190,8 +191,10 @@ Bioconductor releases twice a year, in spring and autumn.
 - [ ] `scripts/publish.sh --check-only`, and update `MIN_PACKAGES` to reflect the
       new count once satisfied.
 - [ ] `scripts/publish.sh --dry-run`, then publish.
+- [ ] Add the release to the served set ([Serving a new release](#serving-a-new-release)).
 - [ ] Load a package in a real webR session against the published URL.
-- [ ] Decide what happens to the oldest release still published.
+- [ ] Decide whether to retire the oldest release still served
+      ([Retiring a release](#retiring-a-release)).
 
 ### Quarterly
 
@@ -227,6 +230,152 @@ Bioconductor release number. Rebuild and republish. It costs hours, not data.
 The exception is a Bioconductor release that has since been withdrawn or
 altered upstream, in which case the published tree was the only copy. This is
 why `BUILDINFO` records the exact source URL.
+
+## Hosting
+
+The templates in [`deploy/`](../deploy/) serve the published releases; see
+[architecture.md](architecture.md#hosting) for how they fit together.
+
+### Health checks
+
+```bash
+curl -sI https://webr.bioconductor.org/3.23/bin/emscripten/contrib/4.6/PACKAGES
+curl -sI https://run.webr.bioconductor.org/
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://webr.bioconductor.org/3.23/
+```
+
+Expect `200` with `access-control-allow-origin: *` on the first, `200` on the
+second, and `301` to the HTTPS URL on the third. `https://webr.bioconductor.org/`
+itself answers `404`: there is no index above the releases.
+
+Every served release, with the R version its binaries target:
+
+```bash
+for pair in 3.18:4.3 3.19:4.4 3.20:4.4 3.21:4.5 3.22:4.5 3.23:4.6; do
+  v=${pair%:*}; r=${pair#*:}
+  printf '%s %s\n' "$v" "$(curl -s -o /dev/null -w '%{http_code}' \
+    "https://webr.bioconductor.org/$v/bin/emscripten/contrib/$r/PACKAGES")"
+done
+```
+
+Every binary that each release's index lists. A `200` for `PACKAGES` does not
+show that the binaries it lists are there; run this after every restart of
+`webr-deployment` ([Known limitations](deployment.md#known-limitations)). It
+prints each binary that does not answer `200`, and no output means every
+release is complete. A single `curl` sends the requests one at a time, a few
+minutes per release; the server answers some concurrent requests with `500`.
+
+```bash
+for pair in 3.18:4.3 3.19:4.4 3.20:4.4 3.21:4.5 3.22:4.5 3.23:4.6; do
+  v=${pair%:*}; r=${pair#*:}
+  base=https://webr.bioconductor.org/$v/bin/emscripten/contrib/$r
+  curl -s "$base/PACKAGES" \
+    | awk -v b="$base" '/^Package:/ {p = $2} /^Version:/ {print "url = \"" b "/" p "_" $2 ".tgz\""}' \
+    | curl -s -I -K - -w '%{http_code} %{url}\n' \
+    | grep -E '^[0-9]{3} https://' | grep -v '^200 '
+done
+```
+
+Certificate expiry, for each hostname:
+
+```bash
+echo | openssl s_client -connect webr.bioconductor.org:443 \
+  -servername webr.bioconductor.org 2>/dev/null | openssl x509 -noout -enddate
+```
+
+In the cluster:
+
+```bash
+kubectl -n webr get pods,certificate
+kubectl -n webr-repl get pods,certificate
+kubectl -n webr logs deploy/webr-deployment -c webr-container --tail=20
+```
+
+### Serving a new release
+
+A published release is served once the init container copies it, which happens
+only at pod start and only for the releases its script names.
+
+1. Publish the release ([Publishing](#publishing)).
+2. Add a `sh copy_version.sh <release>` line to the init script in
+   `deploy/20-webr.yaml`, and add the release to the loops in
+   [Health checks](#health-checks).
+3. Apply the templates. The changed pod template restarts the Deployment, and
+   the init container copies every release again, so the site is unavailable
+   for several hours. Schedule it accordingly.
+
+   ```bash
+   kubectl apply -k deploy/
+   kubectl -n webr rollout status deploy/webr-deployment --timeout=24h
+   ```
+
+4. Run the health checks.
+
+### Retiring a release
+
+The server serves everything under `/mnt/webr-js2` on `webr-pvc`, and the init
+script never deletes a release it does not name. Removing a release's line from
+the script stops it being copied, but the copy already on the volume is still
+served.
+
+1. Delete the served copy, and any copy an interrupted start left under
+   `newcopy/`:
+
+   ```bash
+   kubectl -n webr exec deploy/webr-deployment -c webr-container -- \
+     rm -rf /mnt/webr-js2/<release> /mnt/webr-js2/newcopy/<release>
+   ```
+
+2. Remove its `sh copy_version.sh <release>` line from the init script in
+   `deploy/20-webr.yaml`, and the release from the loops in
+   [Health checks](#health-checks). Applying the change restarts the
+   Deployment with the hours-long copy, so apply it at a scheduled time; until
+   it is applied, any pod start copies the release back.
+3. To remove the release from object storage as well, delete
+   `<RCLONE_REMOTE>/<release>` with `rclone purge`. This cannot be undone.
+
+### Refreshing a served release
+
+Republishing a release updates object storage only. The served copy follows at
+the next pod start:
+
+```bash
+kubectl -n webr rollout restart deploy/webr-deployment
+kubectl -n webr rollout status deploy/webr-deployment --timeout=24h
+```
+
+The restart has the same hours-long outage as above.
+
+### Changing the REPL page
+
+The page is in [`deploy/repl-files/`](../deploy/repl-files/). The ConfigMaps
+are generated without a name hash, so applying a change does not restart the
+pods:
+
+```bash
+kubectl apply -k deploy/
+kubectl -n webr-repl rollout restart deploy/webr-repl
+```
+
+To roll a change back, revert the files in `deploy/repl-files/` and run the
+same two commands. `kubectl rollout undo` does not restore them: the ConfigMaps
+keep their names, so the previous ReplicaSet mounts the changed files.
+
+### Certificates
+
+cert-manager renews the certificates for both hostnames before they expire.
+A `Certificate` that stays `READY False`, or an expiry date under 30 days in
+the health checks, needs attention; see
+[troubleshooting.md](troubleshooting.md#a-certificate-is-not-renewed).
+
+### Backups and restore
+
+| What | Backup | Restore |
+|---|---|---|
+| Release trees in object storage | None; reproducible from a release number | Rebuild and republish ([Recovery](#recovery)) |
+| Served copy on `webr-pvc` | None; a cache of object storage | Restart the Deployment |
+| `rclone.conf` | The operator's credential store | Recreate the `rclone-conf` secret ([deployment.md](deployment.md#deploying-from-scratch)) |
+| Everything else in the cluster | `deploy/` | `kubectl apply -k deploy/` |
 
 ## Known gaps
 
