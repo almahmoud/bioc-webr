@@ -1,0 +1,73 @@
+# Traefik middlewares: a permanent http -> https redirect, and the CORS headers
+# that let pages on other origins fetch packages.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: webr
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: webr-cors
+  namespace: webr
+spec:
+  headers:
+    customResponseHeaders:
+      Access-Control-Allow-Origin: "*"
+      Access-Control-Allow-Methods: "HEAD, GET, OPTIONS"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webr
+  namespace: webr
+  annotations:
+    # Site-specific: the cert-manager ClusterIssuer.
+    cert-manager.io/cluster-issuer: ssl-wildcard
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    # Middleware references take the form <namespace>-<name>@kubernetescrd.
+    traefik.ingress.kubernetes.io/router.middlewares: webr-webr-cors@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - webr.bioconductor.org
+      secretName: webr-bioconductor-org-tls
+  rules:
+    - host: webr.bioconductor.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: webr-service
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webr-http-redirect
+  namespace: webr
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: webr-redirect-https@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: webr.bioconductor.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: webr-service
+                port:
+                  name: http

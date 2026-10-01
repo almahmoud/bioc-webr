@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webr-deployment
+  namespace: webr
+  labels:
+    app: webr
+spec:
+  replicas: 1
+  # The init container copies ~140 GB from object storage before the server
+  # starts, so the rollout needs far longer than the 10 minute default.
+  progressDeadlineSeconds: 86400
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: webr
+  template:
+    metadata:
+      labels:
+        app: webr
+    spec:
+      initContainers:
+        - name: init-rclone
+          image: rclone/rclone:latest
+          command: ["/bin/sh", "-c"]
+          # Site-specific: the `js2` rclone remote and `webr` bucket (defined in
+          # the rclone-conf secret), the public object-store URL serving each
+          # release's pathlist, and the list of releases to serve.
+          args:
+            - |
+              cp /mnt/secrets/rclone.conf ~/.rclone.conf
+              cat << "EOF" > copy_version.sh
+              BIOCVER="$1"
+              mkdir -p /mnt/webr-js2/newcopy
+              cp -r /mnt/webr-js2/$BIOCVER /mnt/webr-js2/newcopy/
+              wget -O /mnt/webr-js2/newcopy/$BIOCVER/pathlist https://js2.jetstream-cloud.org:8001/swift/v1/webr/$BIOCVER/pathlist
+              rclone copyto -vvvvv js2:/webr/$BIOCVER/index.html /mnt/webr-js2/newcopy/$BIOCVER/index.html
+              rclone sync -vvvvv js2:/webr/$BIOCVER /mnt/webr-js2/newcopy/$BIOCVER
+              find /mnt/webr-js2/newcopy/$BIOCVER -type f | sed 's@/mnt/webr-js2/newcopy/$BIOCVER/@@g' > /mnt/webr-js2/newcopy/$BIOCVER/firstround
+              comm -23 <(sort /mnt/webr-js2/newcopy/$BIOCVER/pathlist) <(sort /mnt/webr-js2/newcopy/$BIOCVER/firstround) > /mnt/webr-js2/newcopy/$BIOCVER/secondround
+              cat /mnt/webr-js2/newcopy/$BIOCVER/secondround | xargs -i -P 20 -n 1 rclone copyto -vvvvv js2:/webr/$BIOCVER/{} /mnt/webr-js2/newcopy/$BIOCVER/{}
+              rm -rf /mnt/webr-js2/$BIOCVER
+              mkdir -p /mnt/webr-js2
+              mv /mnt/webr-js2/newcopy/$BIOCVER /mnt/webr-js2/$BIOCVER
+              EOF
+
+              sh copy_version.sh 3.18
+              sh copy_version.sh 3.19
+              sh copy_version.sh 3.20
+              sh copy_version.sh 3.21
+              sh copy_version.sh 3.22
+              sh copy_version.sh 3.23
+          volumeMounts:
+            - name: webr-volume
+              mountPath: /mnt/webr-js2
+            - name: rclone-conf-volume
+              mountPath: /mnt/secrets
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      containers:
+        - name: webr-container
+          image: rocker/r-ver:latest
+          command:
+            - Rscript
+            - -e
+            - install.packages("httpuv"); httpuv::runStaticServer( dir = "/mnt/webr-js2",
+              host = "0.0.0.0", port = 8080, browse=FALSE, headers = list("Access-Control-Allow-Origin"
+              =  "*"))
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: webr-volume
+              mountPath: /mnt/webr-js2
+          # The server exposes release directories, not a root index, so `/`
+          # answers 404. Probe the listening socket instead of a path that would
+          # have to be updated with every Bioconductor release.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 40
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 900
+            periodSeconds: 30
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: webr-volume
+          persistentVolumeClaim:
+            claimName: webr-pvc
+        # Created by the operator, with the key rclone.conf. Never committed;
+        # see docs/deployment.md.
+        - name: rclone-conf-volume
+          secret:
+            secretName: rclone-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webr-service
+  namespace: webr
+spec:
+  selector:
+    app: webr
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
