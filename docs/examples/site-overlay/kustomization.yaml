@@ -1,0 +1,67 @@
+# Adapts the templates in deploy/ to another site: storage, certificate issuer
+# and hostnames. Render with
+#
+#   kubectl kustomize docs/examples/site-overlay
+#
+# The init container in deploy/20-webr.yaml also names the rclone remote, the
+# public object-store URL and the releases to serve; another object store
+# needs a patch replacing its args.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../deploy
+
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: webr-pvc
+    patch: |-
+      - op: replace
+        path: /spec/storageClassName
+        value: standard
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 300Gi
+
+  - target:
+      kind: Ingress
+      name: webr
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: webr.example.org
+      - op: replace
+        path: /spec/rules/0/host
+        value: webr.example.org
+  - target:
+      kind: Ingress
+      name: webr-http-redirect
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: webr.example.org
+
+  - target:
+      kind: Ingress
+      name: webr-repl
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: run.webr.example.org
+      - op: replace
+        path: /spec/rules/0/host
+        value: run.webr.example.org
+  - target:
+      kind: Ingress
+      name: webr-repl-http-redirect
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: run.webr.example.org
