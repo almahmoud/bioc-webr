@@ -6,3 +6,18 @@ resources:
   - 10-webr-storage.yaml
   - 20-webr.yaml
   - 30-webr-ingress.yaml
+  - 40-webr-repl.yaml
+
+configMapGenerator:
+  - name: webr-repl-files
+    namespace: webr-repl
+    files:
+      - repl-files/index.html
+      - repl-files/repl.mjs
+  - name: nginx-conf
+    namespace: webr-repl
+    files:
+      - repl-files/nginx.conf
+
+generatorOptions:
+  disableNameSuffixHash: true

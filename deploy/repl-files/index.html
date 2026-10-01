@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>WebR REPL with Prepopulated Commands</title>
+</head>
+<body>
+    <h1>WebR REPL Demo</h1>
+    <div>
+        <pre><code id="out">Loading webR, please wait...</code></pre>
+        <input spellcheck="false" autocomplete="off" id="input" type="text">
+        <button onclick="globalThis.sendInput()" id="run">Run</button>
+    </div>
+
+    <script type="module">
+        import { Console } from 'https://webr.r-wasm.org/latest/webr.mjs';
+
+        const webRConsole = new Console({
+            stdout: line => document.getElementById('out').append(line + '\n'),
+            stderr: line => document.getElementById('out').append(line + '\n'),
+            prompt: p => document.getElementById('out').append(p),
+        });
+
+        // Start the console
+        await webRConsole.run();
+
+        // Prepopulate commands after webR is ready
+        setTimeout(async () => {
+            // Send prepopulated commands
+            webRConsole.stdin('print("Welcome to WebR!")');
+            document.getElementById('out').append('print("Welcome to WebR!")\n');
+
+            setTimeout(() => {
+                webRConsole.stdin('x <- 1:10');
+                document.getElementById('out').append('x <- 1:10\n');
+
+                setTimeout(() => {
+                    webRConsole.stdin('summary(x)');
+                    document.getElementById('out').append('summary(x)\n');
+                }, 1000);
+            }, 1000);
+        }, 3000);
+
+        // Handle user input
+        let input = document.getElementById('input');
+        globalThis.sendInput = () => {
+            webRConsole.stdin(input.value);
+            document.getElementById('out').append(input.value + '\n');
+            input.value = "";
+        };
+
+        // Send input on Enter key
+        input.addEventListener("keydown", (evt) => {
+            if(evt.keyCode === 13) globalThis.sendInput();
+        });
+    </script>
+</body>
+</html>
