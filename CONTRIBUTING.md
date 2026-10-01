@@ -71,14 +71,18 @@ produced — that number is useful to the next person, and belongs in
   earns its place by recording a decision, a constraint, or a trap — the reason
   the build uses a named volume, the reason `pathlist` contains itself.
 - **Mark behaviour that consumers depend on.** Some behaviour is odd because
-  consumers depend on it, such as the shape of `pathlist`. Those are marked in
-  the code. Changing one is a decision, not a cleanup.
+  consumers depend on it, such as the shape of `pathlist`, which the hosting
+  reads. Those are marked in the code. Changing one is a decision, not a
+  cleanup.
 - **Fail loudly.** A build that quietly produces less than it should is worse
   than one that stops. This is why the remotes filter reports what it dropped,
   why a zero-package build is an error, and why `verify` exists at all.
 - `set -euo pipefail` in every shell script.
 
 ## Changing pinned versions
+
+[docs/updating.md](docs/updating.md) has the procedure, checks and rollback
+for every pin, including the hosting templates in `deploy/`.
 
 `WEBR_VERSION` is a compatibility contract, not a preference — a webR release
 fixes the ABI of every `.wasm` it produces. Read
