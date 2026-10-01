@@ -249,6 +249,122 @@ docker compose run --rm --entrypoint bash verify -c 'ls /repo'
 - **Mixed content**: a page served over HTTPS cannot fetch from
   `http://localhost`. Serve the page over HTTP too while testing.
 
+## Hosting
+
+### `https://webr.bioconductor.org/` answers 404
+
+Expected. The server has no index above the release directories. Check a
+release path instead:
+
+```bash
+curl -sI https://webr.bioconductor.org/3.23/bin/emscripten/contrib/4.6/PACKAGES
+```
+
+### Every path fails after a restart
+
+The init container is still copying releases. The server starts only when it
+finishes, which takes hours; until then the ingress has no ready endpoint.
+
+```bash
+kubectl -n webr get pods
+kubectl -n webr logs deploy/webr-deployment -c init-rclone --tail=50
+```
+
+### A published release answers 404
+
+The release is in object storage but not on the served volume. Either the init
+script in `deploy/20-webr.yaml` does not name it, or the pod has not restarted
+since it was published. See
+[operations.md](operations.md#serving-a-new-release).
+
+### A release is stale or missing files after a restart
+
+The init script does not stop on errors: a failed `rclone` call is logged, the
+script moves on, and the copy is swapped into place whatever its state. Its
+second pass fetches nothing for 3.19 to 3.23
+([Known limitations](deployment.md#known-limitations)), so a file that
+`rclone sync` missed stays missing. The completeness check in
+[operations.md](operations.md#health-checks) lists the missing binaries;
+restarting the Deployment copies every release again.
+
+The init container's log has errors on every start, even with working
+credentials: the second pass requests every `pathlist` entry of 3.21 onwards
+at a path that does not exist, and `wget` finds no `pathlist` for 3.19 and
+3.20. Look at the first errors in the log:
+
+```bash
+kubectl -n webr logs deploy/webr-deployment -c init-rclone | grep -i -E 'error|failed' | head
+```
+
+Authentication errors there mean the credentials are wrong. The secret must
+have the key `rclone.conf`, defining the remote the script names (`js2`). List
+the keys without printing the values:
+
+```bash
+kubectl -n webr get secret rclone-conf \
+  -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}'
+```
+
+A pod that stays in `Init:0/1` with `secret "rclone-conf" not found` in its
+events (`kubectl -n webr describe pod -l app=webr`) means the secret was never
+created; see [deployment.md](deployment.md#deploying-from-scratch).
+
+### `webr-container` restarts in a loop
+
+It installs httpuv before serving, from Posit Package Manager (`p3m.dev`), the
+repository `rocker/r-ver` configures. An outage there, or a network policy
+blocking it, stops it there:
+
+```bash
+kubectl -n webr logs deploy/webr-deployment -c webr-container --previous
+```
+
+### webR in a browser cannot install from webr.bioconductor.org
+
+- **R version**: webR looks in `bin/emscripten/contrib/<its R version>/`. A
+  release built for another R version has no binaries there; see the table in
+  [architecture.md](architecture.md#webrbioconductororg).
+- **Repository URL**: pass the release root, `https://webr.bioconductor.org/3.23`,
+  not the `bin/emscripten/contrib/` directory.
+- **CORS**: the response must carry `access-control-allow-origin: *`:
+
+  ```bash
+  curl -sI https://webr.bioconductor.org/3.23/bin/emscripten/contrib/4.6/PACKAGES \
+    | grep -i access-control
+  ```
+
+### A certificate is not renewed
+
+```bash
+kubectl -n webr describe certificate webr-bioconductor-org-tls
+kubectl -n webr-repl describe certificate run-webr-bioconductor-org-tls
+kubectl get certificaterequests,orders,challenges -A
+```
+
+The ClusterIssuer has to complete its challenge for each hostname. A DNS-01
+solver needs working API credentials for the provider that is authoritative for
+the zone; compare its configuration with:
+
+```bash
+dig +short NS bioconductor.org
+```
+
+An HTTP-01 solver needs the hostname to resolve to the ingress.
+
+### run.webr.bioconductor.org stays on "Loading webR, please wait..."
+
+The page's `Content-Security-Policy` allows no inline script, so browsers block
+the page's script and webR never loads; the browser console reports the
+blocked script. [deployment.md](deployment.md#known-limitations) describes the
+fix.
+
+Once the script runs, the page loads webR from
+`https://webr.r-wasm.org/latest/`. Check that it is reachable:
+
+```bash
+curl -sI https://webr.r-wasm.org/latest/webr.mjs
+```
+
 ## Cleaning up entirely
 
 ```bash
