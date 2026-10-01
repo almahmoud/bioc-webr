@@ -94,6 +94,13 @@ docker compose --profile serve up serve
 
 Then open <http://localhost:8080/demo/?repo=http://localhost:8080/>.
 
+The local build has to target the R version of the page's webR. With the pins
+above (webR `v0.5.9`, R 4.5), set `WEBR_VERSION=v0.5.9` and `BIOC_VERSION=3.22`
+in `.env` before building; the `.env.example` defaults, `v0.6.0` and 3.23,
+build for R 4.6, and the page then reports `package not available`. To test an
+R 4.6 build instead, change the page's two pins to `v0.6.0` and `3.23` while
+testing.
+
 The `?repo=` override is honoured **only** when the page is served from
 localhost. On a public page it would let a crafted link make a visitor install
 packages from an arbitrary origin.
